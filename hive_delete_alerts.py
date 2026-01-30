@@ -1,47 +1,57 @@
 import requests
-import time
+import sys
 
 # --- CONFIGURATION ---
-API_URL = "http://127.0.0.1:9000" 
+API_URL = "http://127.0.0.1:9000"
 API_KEY = "CLE_API"
-BATCH_SIZE = 10  # On descend à 10 pour que l'API réponde instantanément
 # ---------------------
 
-session = requests.Session()
-session.headers.update({"Authorization": f"Bearer {API_KEY}"})
+headers = {
+    "Authorization": f"Bearer {API_KEY}",
+    "Content-Type": "application/json"
+}
 
-def run_cleanup():
-    print("[*] Mode survie activé. Suppression par petits lots...")
-    total = 0
+def get_all_alert_ids():
+    print(f"[*] Récupération de la liste des alertes sur {API_URL}...")
+    # On demande toutes les alertes (range=all)
+    url = f"{API_URL}/api/alert?range=all"
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        alerts = response.json()
+        return [a['id'] for a in alerts]
+    except Exception as e:
+        print(f"[!] Erreur lors de la récupération : {e}")
+        return []
+
+def delete_alerts(ids):
+    total = len(ids)
+    print(f"[*] {total} alertes trouvées. Début de la suppression...")
     
-    while True:
+    count = 0
+    for alert_id in ids:
+        # On ajoute ?force=1 comme tu l'as trouvé
+        del_url = f"{API_URL}/api/alert/{alert_id}?force=1"
         try:
-            # On demande une liste minuscule pour ne pas faire ramer Elasticsearch
-            resp = session.get(f"{API_URL}/api/alert?range=0-{BATCH_SIZE}", timeout=20)
-            
-            if resp.status_code != 200:
-                print(f"[!] Erreur {resp.status_code}. Repos 5s...")
-                time.sleep(5)
-                continue
-                
-            alerts = resp.json()
-            if not alerts:
-                print("[+] Plus rien ! Félicitations.")
-                break
-
-            for a in alerts:
-                alert_id = a['id']
-                del_resp = session.delete(f"{API_URL}/api/alert/{alert_id}?force=1", timeout=10)
-                if del_resp.status_code in [200, 204]:
-                    total += 1
-                    if total % 50 == 0:
-                        print(f"[V] {total} alertes supprimées...")
-                else:
-                    print(f"[!] Echec sur {alert_id}: {del_resp.status_code}")
-
+            res = requests.delete(del_url, headers=headers)
+            if res.status_code in [200, 204]:
+                count += 1
+                if count % 100 == 0:
+                    print(f"[>] Progression : {count}/{total} supprimées...")
+            else:
+                print(f"[!] Échec pour {alert_id}: {res.status_code}")
         except Exception as e:
-            print(f"[-] Connexion perdue ({e}). On insiste dans 5s...")
-            time.sleep(5)
+            print(f"[!] Erreur réseau pour {alert_id}: {e}")
+
+    print(f"\n[+] Terminé ! {count} alertes supprimées.")
 
 if __name__ == "__main__":
-    run_cleanup()
+    ids = get_all_alert_ids()
+    if ids:
+        confirm = input(f"!!! ATTENTION : Supprimer {len(ids)} alertes ? (y/n) : ")
+        if confirm.lower() == 'y':
+            delete_alerts(ids)
+        else:
+            print("Opération annulée.")
+    else:
+        print("Aucune alerte trouvée.")
