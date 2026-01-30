@@ -1,57 +1,50 @@
 import requests
-import sys
+from concurrent.futures import ThreadPoolExecutor
+import time
 
 # --- CONFIGURATION ---
 API_URL = "http://192.168.20.4:9000"
 API_KEY = "CLE_API"
+THREADS = 10      # Vitesse x10
+BATCH_SIZE = 500  # Sécurité pour la RAM 
 # ---------------------
 
-headers = {
-    "Authorization": f"Bearer {API_KEY}",
-    "Content-Type": "application/json"
-}
+session = requests.Session()
+session.headers.update({"Authorization": f"Bearer {API_KEY}"})
 
-def get_all_alert_ids():
-    print(f"[*] Récupération de la liste des alertes sur {API_URL}...")
-    # On demande toutes les alertes (range=all)
-    url = f"{API_URL}/api/alert?range=all"
+def delete_alert(alert_id):
     try:
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        alerts = response.json()
-        return [a['id'] for a in alerts]
-    except Exception as e:
-        print(f"[!] Erreur lors de la récupération : {e}")
-        return []
+        url = f"{API_URL}/api/alert/{alert_id}?force=1"
+        r = session.delete(url, timeout=5)
+        return r.status_code in [200, 204, 404]
+    except:
+        return False
 
-def delete_alerts(ids):
-    total = len(ids)
-    print(f"[*] {total} alertes trouvées. Début de la suppression...")
-    
-    count = 0
-    for alert_id in ids:
-        # On ajoute ?force=1 comme tu l'as trouvé
-        del_url = f"{API_URL}/api/alert/{alert_id}?force=1"
-        try:
-            res = requests.delete(del_url, headers=headers)
-            if res.status_code in [200, 204]:
-                count += 1
-                if count % 100 == 0:
-                    print(f"[>] Progression : {count}/{total} supprimées...")
-            else:
-                print(f"[!] Échec pour {alert_id}: {res.status_code}")
-        except Exception as e:
-            print(f"[!] Erreur réseau pour {alert_id}: {e}")
+def run_cleanup():
+    while True:
+        print(f"[*] Récupération d'un lot de {BATCH_SIZE} alertes...")
+        # On demande un petit lot pour ne pas faire crasher Java
+        resp = session.get(f"{API_URL}/api/alert?range=0-{BATCH_SIZE}")
+        
+        if resp.status_code != 200:
+            print("[!] Erreur API, pause de 10s...")
+            time.sleep(10)
+            continue
+            
+        alerts = resp.json()
+        if not alerts:
+            print("[+] Plus aucune alerte. Travail terminé !")
+            break
 
-    print(f"\n[+] Terminé ! {count} alertes supprimées.")
+        ids = [a['id'] for a in alerts]
+        print(f"[*] Suppression de {len(ids)} alertes en cours...")
+
+        # Exécution parallèle sur le lot actuel
+        with ThreadPoolExecutor(max_workers=THREADS) as executor:
+            executor.map(delete_alert, ids)
+        
+        print(f"[✓] Lot traité. Nettoyage de la RAM...")
+        time.sleep(1) # Pause ElasticSearch
 
 if __name__ == "__main__":
-    ids = get_all_alert_ids()
-    if ids:
-        confirm = input(f"!!! ATTENTION : Supprimer {len(ids)} alertes ? (y/n) : ")
-        if confirm.lower() == 'y':
-            delete_alerts(ids)
-        else:
-            print("Opération annulée.")
-    else:
-        print("Aucune alerte trouvée.")
+    run_cleanup()
